@@ -1,1 +1,1 @@
-Agent Harness Hackathon
+Agent Harness Hackathon with TrueFoundry and Qodo
