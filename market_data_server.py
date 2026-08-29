@@ -9,8 +9,10 @@ Three layers, deliberately separated:
   3. run()                         -- transport.
 
 Design rules learned the hard way this week:
-  * Batch everything. Every model round-trip costs a rate-limit slot, so
-    one call returning four prices beats four calls returning one.
+  * Batch at the MCP boundary. One tool call returning N prices costs one
+    model round-trip; N tool calls cost N. Upstream fetches stay serial so
+    that a single bad ticker produces a per-symbol error instead of
+    failing the batch.
   * Keep schemas boring. A list of strings and an optional string. No
     `const`, no nullable unions -- those are exactly what broke tool
     calling against Gemini's OpenAI compatibility layer.
@@ -34,6 +36,7 @@ from typing import Any
 
 import yfinance as yf
 from mcp.server.mcpserver import MCPServer
+import math
 
 VALID_PERIODS = ("1mo", "3mo", "6mo", "1y", "2y", "5y")
 MAX_TICKERS = 25
@@ -92,7 +95,7 @@ def fetch_prices(tickers: list[str]) -> dict[str, Any]:
                 price = float(frame["Close"].iloc[-1])
 
             price = float(price)
-            if price <= 0:
+            if not math.isfinite(price) or price <= 0:
                 errors[symbol] = f"non-positive price: {price}"
                 continue
             prices[symbol] = round(price, 4)
@@ -121,6 +124,14 @@ def fetch_history(tickers: list[str], period: str = "1y") -> dict[str, Any]:
             "errors": {"_": f"period must be one of {', '.join(VALID_PERIODS)}"},
         }
 
+    if len(symbols) > MAX_TICKERS:
+        return {
+            "as_of": _now(),
+            "period": period,
+            "closes": {},
+            "errors": {"_": f"too many tickers ({len(symbols)}), max {MAX_TICKERS}"},
+        }
+
     closes: dict[str, dict[str, float]] = {}
     errors: dict[str, str] = {}
 
@@ -134,6 +145,7 @@ def fetch_history(tickers: list[str], period: str = "1y") -> dict[str, Any]:
             closes[symbol] = {
                 stamp.strftime("%Y-%m-%d"): round(float(value), 4)
                 for stamp, value in series.items()
+                if math.isfinite(float(value))
             }
         except Exception as exc:  # noqa: BLE001
             errors[symbol] = f"{type(exc).__name__}: {exc}"
