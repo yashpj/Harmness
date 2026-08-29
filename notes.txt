@@ -1,0 +1,3 @@
+for Gemini we can remove individual models, but the configured provider itself remains, and a custom provider must keep at least one model (removing the last one fails with a manifest.models validation error).
+
+Code Mode inverts the usual tradeoff — writing code that calls tools costs one model turn instead of N, which matters enormously on a constrained rate limit.
