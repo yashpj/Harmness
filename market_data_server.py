@@ -173,7 +173,7 @@ def _now() -> str:
 # --------------------------------------------------------------------------
 
 server = MCPServer(
-    name="market-data",
+    name="financemcp",
     instructions=(
         "Live public market data for portfolio analysis. Prices are delayed "
         "and for analysis only. This server is read-only: it cannot place, "
