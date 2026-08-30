@@ -61,7 +61,7 @@ sequenceDiagram
     participant Agent
     participant Skill as portfolio-drift skill
     participant Market as financemcp
-    participant Box as Sandbox
+    participant Sandbox
 
     You->>Agent: holdings, target allocation, cash
     Agent->>Skill: load policy
@@ -69,8 +69,8 @@ sequenceDiagram
     You-->>Agent: yes, deploy it
     Agent->>Market: get_prices for all tickers (one call)
     Market-->>Agent: prices and timestamp
-    Agent->>Box: run drift.py with holdings and prices
-    Box-->>Agent: drift, breaches, trades, warnings
+    Agent->>Sandbox: run drift.py with holdings and prices
+    Sandbox-->>Agent: drift, breaches, trades, warnings
     Agent-->>You: trade list — awaiting approval
     You-->>Agent: approved
     Agent->>Market: save_rebalance_plan
