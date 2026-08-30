@@ -37,10 +37,12 @@ from typing import Any
 import yfinance as yf
 from mcp.server.mcpserver import MCPServer
 import math
+import json
+from pathlib import Path
 
 VALID_PERIODS = ("1mo", "3mo", "6mo", "1y", "2y", "5y")
 MAX_TICKERS = 25
-
+PLANS_FILE = Path("saved_plans.json")
 
 # --------------------------------------------------------------------------
 # Layer 1: pure functions. No MCP here on purpose -- these are what the
@@ -159,6 +161,17 @@ def fetch_history(tickers: list[str], period: str = "1y") -> dict[str, Any]:
         "errors": errors,
     }
 
+def save_plan(label: str, plan: dict[str, Any]) -> dict[str, Any]:
+    try:
+        existing = json.loads(PLANS_FILE.read_text()) if PLANS_FILE.exists() else []
+    except json.JSONDecodeError:
+        existing = []
+
+    record = {"label": label, "saved_at": _now(), "plan": plan}
+    existing.append(record)
+    PLANS_FILE.write_text(json.dumps(existing, indent=2))
+    return {"saved": True, "label": label, "saved_at": record["saved_at"],
+            "total_plans": len(existing)}
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
@@ -214,6 +227,17 @@ def get_history(tickers: list[str], period: str = "1y") -> dict[str, Any]:
     """
     return fetch_history(tickers, period)
 
+@server.tool()
+def save_rebalance_plan(label: str, plan: dict[str, Any]) -> dict[str, Any]:
+    """Save an approved rebalance plan to the user's records.
+
+    Call this ONLY after the user has explicitly approved the specific
+    trades. Pass the full drift.py output as `plan` so the saved record
+    includes the prices and drift figures the decision was based on.
+
+    This writes to the user's records and is not silently reversible.
+    """
+    return save_plan(label, plan)
 
 # --------------------------------------------------------------------------
 # Layer 3: transport.
