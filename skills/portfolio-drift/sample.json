@@ -1,0 +1,13 @@
+{
+  "as_of": "2026-08-26T14:00:00Z",
+  "cash": 3000,
+  "targets": {"VTI": 0.50, "VXUS": 0.25, "BND": 0.21, "VNQ": 0.04},
+  "prices": {"VTI": 289.12, "VXUS": 71.85, "BND": 72.40, "VNQ": 92.10},
+  "holdings": {
+    "VTI":  {"shares": 48},
+    "VXUS": {"shares": 62},
+    "BND":  {"market_value": 9800.0},
+    "VNQ":  {"shares": 9}
+  },
+  "policy": {"abs_band_pp": 5.0, "rel_band_pct": 25.0, "allow_fractional": true, "min_trade_value": 50.0}
+}

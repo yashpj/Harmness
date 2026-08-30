@@ -54,6 +54,7 @@ a 4% target that drifts to 6% is a 50% relative move but only 2pp absolute.
 
 import json
 import sys
+import math
 
 WEIGHT_SUM_TOLERANCE = 1e-4
 
@@ -83,31 +84,26 @@ def _validate(payload):
 
     weight_sum = 0.0
     for symbol, weight in targets.items():
-        if not isinstance(weight, (int, float)) or isinstance(weight, bool):
-            raise InputError(f"target weight for {symbol} is not a number")
-        if weight < 0:
+        value = _as_finite_float(weight, f"target weight for {symbol}")
+        if value < 0:
             raise InputError(f"target weight for {symbol} is negative")
-        weight_sum += float(weight)
+        weight_sum += value
     if abs(weight_sum - 1.0) > WEIGHT_SUM_TOLERANCE:
         raise InputError(f"target weights sum to {weight_sum:.6f}, expected 1.0")
-
+    
     missing = sorted(set(targets) - set(prices))
     if missing:
         raise InputError(f"no price supplied for: {', '.join(missing)}")
 
     for symbol, price in prices.items():
-        if not isinstance(price, (int, float)) or isinstance(price, bool):
-            raise InputError(f"price for {symbol} is not a number")
-        if price <= 0:
-            raise InputError(f"price for {symbol} must be > 0, got {price}")
-
-    cash = payload.get("cash", 0.0)
-    if not isinstance(cash, (int, float)) or isinstance(cash, bool):
-        raise InputError("'cash' must be a number")
+        value = _as_finite_float(price, f"price for {symbol}")
+        if value <= 0:
+            raise InputError(f"price for {symbol} must be > 0, got {value}")
+    
+    cash = _as_finite_float(payload.get("cash", 0.0), "cash")
     if cash < 0:
-        raise InputError("'cash' must not be negative")
-
-
+        raise InputError("cash must not be negative")
+    
 def _resolve_policy(raw):
     policy = dict(DEFAULT_POLICY)
     if raw is None:
@@ -118,6 +114,19 @@ def _resolve_policy(raw):
     if unknown:
         raise InputError(f"unknown policy keys: {', '.join(unknown)}")
     policy.update(raw)
+
+    for key in ("abs_band_pp", "rel_band_pct", "min_trade_value"):
+        value = policy[key]
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise InputError(f"policy.{key} must be a number, got {value!r}")
+        if value < 0:
+            raise InputError(f"policy.{key} must not be negative, got {value}")
+        policy[key] = float(value)
+
+    for key in ("allow_fractional", "deploy_cash"):
+        if not isinstance(policy[key], bool):
+            raise InputError(f"policy.{key} must be true or false, got {policy[key]!r}")
+
     return policy
 
 
@@ -135,17 +144,35 @@ def _market_value(entry, price, symbol):
     if not has_shares and not has_value:
         raise InputError(f"holding for {symbol}: needs 'shares' or 'market_value'")
 
+    # if has_shares:
+    #     shares = float(entry["shares"])
+    #     if shares < 0:
+    #         raise InputError(f"holding for {symbol}: shares must not be negative")
+    #     return shares, shares * price
+
+    # value = float(entry["market_value"])
+    # if value < 0:
+    #     raise InputError(f"holding for {symbol}: market_value must not be negative")
+    # return value / price, value
+
     if has_shares:
-        shares = float(entry["shares"])
+        shares = _as_finite_float(entry["shares"], f"holding for {symbol}: shares")
         if shares < 0:
             raise InputError(f"holding for {symbol}: shares must not be negative")
         return shares, shares * price
 
-    value = float(entry["market_value"])
+    value = _as_finite_float(entry["market_value"], f"holding for {symbol}: market_value")
     if value < 0:
         raise InputError(f"holding for {symbol}: market_value must not be negative")
     return value / price, value
 
+def _as_finite_float(value, label):
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise InputError(f"{label} must be a number, got {value!r}")
+    number = float(value)
+    if not math.isfinite(number):
+        raise InputError(f"{label} must be finite, got {number}")
+    return number
 
 def calculate_drift(payload):
     _validate(payload)
@@ -158,15 +185,19 @@ def calculate_drift(payload):
     warnings = []
 
     untracked = sorted(set(holdings) - set(targets))
+    effective_targets = dict(targets)
+    for symbol in untracked:
+        if symbol not in prices:
+            raise InputError(f"no price supplied for untracked holding: {symbol}")
+        effective_targets[symbol] = 0.0
     if untracked:
         warnings.append(
-            "held but not in target allocation, excluded from drift: " + ", ".join(untracked)
+            "held but not in target allocation, treated as 0% target: " + ", ".join(untracked)
         )
-
     # --- current state -------------------------------------------------
     rows = []
     invested = 0.0
-    for symbol in targets:
+    for symbol in effective_targets:
         price = float(prices[symbol])
         shares, value = _market_value(holdings.get(symbol), price, symbol)
         invested += value
@@ -186,7 +217,7 @@ def calculate_drift(payload):
 
     for row in rows:
         symbol = row["symbol"]
-        target_weight = float(targets[symbol])
+        target_weight = float(effective_targets[symbol])
         current_weight = row["market_value"] / base
         drift_pp = (current_weight - target_weight) * 100.0
 
@@ -256,16 +287,26 @@ def calculate_drift(payload):
 
     # Turnover: half the sum of absolute deviations, i.e. the share of the
     # portfolio that changes hands in a full rebalance.
-    turnover_pct = total_abs_drift_pp / 2.0
+    traded_value = sum(abs(p["delta_value"]) for p in positions)
+    turnover_pct = traded_value / base * 100.0 if base else 0.0
     max_drift_pp = max((abs(p["drift_pp"]) for p in positions), default=0.0)
 
-    net_trade_value = sum(p["delta_value"] for p in positions)
-    if policy["deploy_cash"] and net_trade_value > cash + 0.01:
-        warnings.append(
-            f"proposed buys exceed available cash by {net_trade_value - cash:.2f}; "
-            "sells must settle first"
-        )
+    gross_buys = sum(p["delta_value"] for p in positions if p["delta_value"] > 0)
+    gross_sells = -sum(p["delta_value"] for p in positions if p["delta_value"] < 0)
 
+    if gross_buys > cash + 0.01:
+        if gross_buys <= cash + gross_sells + 0.01:
+            warnings.append(
+                f"buys of {gross_buys:.2f} exceed cash of {cash:.2f}; "
+                f"{gross_buys - cash:.2f} must come from sale proceeds, "
+                "which do not settle immediately"
+            )
+        else:
+            warnings.append(
+                f"buys of {gross_buys:.2f} exceed cash plus sale proceeds by "
+                f"{gross_buys - cash - gross_sells:.2f}; plan is not fundable"
+            )
+    
     return {
         "ok": True,
         "as_of": payload.get("as_of"),
@@ -301,6 +342,10 @@ def main():
         json.dump({"ok": False, "error": f"invalid JSON: {exc}", "error_type": "input"}, sys.stdout)
         sys.stdout.write("\n")
         return 1
+    except Exception as exc:  # noqa: BLE001 -- contract is JSON out, always
+        json.dump({"ok": False, "error": f"{type(exc).__name__}: {exc}",
+                   "error_type": "internal"}, sys.stdout)
+        sys.stdout.write("\n")
 
     json.dump(result, sys.stdout, indent=2)
     sys.stdout.write("\n")
